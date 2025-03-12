@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "ImageTileProcessor"
+version = "0.1.0"
+description = "This is a in-house package to deal with lazy tiled image tile loading to save RAM and various methods to post process tiled outpus "
+authors = ["Tong Li <tl10@sanger.ac.uk>"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+# Add your dependencies here
+numpy = "^1.21.0"
+fire = "^0.6.0"
+aicsimageio = "^4.12.1"
+shapely = "^2.0.3"
+tifffile = "^2024.7.24"
+
+[tool.poetry.dev-dependencies]
+pytest = "^6.2.4"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
