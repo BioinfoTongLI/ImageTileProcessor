@@ -10,7 +10,12 @@ import zarr
 logging.basicConfig(level=logging.INFO)
 
 # Function to extract a tile from a TIFF file
-def get_tile_from_tifffile(image, xmin, xmax, ymin, ymax, channel=0, zplane=0, timepoint=0, resolution_level=0):
+def get_tile_from_tifffile(
+        image, xmin, xmax, ymin, ymax,
+        channel:list[int]=[0],
+        zplane:list[int]=[0],
+        timepoint:list[int]=[0],
+        resolution_level=0):
     store = tifffile.imread(image, aszarr=True)
     zgroup = zarr.open(store, mode="r")
     if isinstance(zgroup, zarr.core.Array):
@@ -27,7 +32,7 @@ def get_tile_from_tifffile(image, xmin, xmax, ymin, ymax, channel=0, zplane=0, t
         dimension_order = [d[0] for d in image.attrs["_ARRAY_DIMENSIONS"]]
         dimension_order = "".join(dimension_order)
 
-    channel += 1 # channel is 0-based in the input
+    channel = channel + 1 # channel is 0-based in the input
     # Extract the tile based on the dimension order
     if dimension_order=="YX":
         tile = image[ymin:ymax, xmin:xmax]
