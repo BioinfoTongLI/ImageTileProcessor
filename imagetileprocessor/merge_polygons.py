@@ -119,7 +119,7 @@ def drop_empty_polygons(polygons):
     logging.info(f"dropping empty polygons")
     return [p for p in polygons if not p.is_empty]
 
-def convert_to_geojson(stitched_polygons, cpus):
+def convert_to_geojson(output_prefix, stitched_polygons, cpus):
     """
     Convert stitched polygons to GeoJSON format and save to a file.
 
@@ -128,7 +128,7 @@ def convert_to_geojson(stitched_polygons, cpus):
     :param cpus: Number of CPUs to use.
     :type cpus: int
     """
-    geojson_output_filename = "segmentation.geojson"
+    geojson_output_filename = f"{output_prefix}.geojson"
     logging.info(f"reading polygons as GeoJSON (may take a while)")
     geojson_list = shapely.to_geojson(stitched_polygons).tolist()
     logging.info(f"converting segmentations to GeoJSON Feature")
@@ -149,7 +149,7 @@ def convert_to_geojson(stitched_polygons, cpus):
     del geojson_features
     del geojson_output
 
-def convert_to_wkt(stitched_polygons, cpus):
+def convert_to_wkt(output_prefix, stitched_polygons, cpus):
     """
     Convert stitched polygons to WKT format and save to a file.
 
@@ -158,7 +158,7 @@ def convert_to_wkt(stitched_polygons, cpus):
     :param cpus: Number of CPUs to use.
     :type cpus: int
     """
-    wkt_output_filename = "segmentation.wkt"
+    wkt_output_filename = f"{output_prefix}.wkt"
     logging.info(f"converting segmentations to well-known-text polygons")
     with multiprocessing.Pool(cpus) as pool:
         wkt_strings = list(
@@ -173,7 +173,11 @@ def convert_to_wkt(stitched_polygons, cpus):
             f.write(wkt_line + "\n")
 
 # Main function to process image and WKT files
-def main(image_path: str, wkts: list, resolution_level: int = 0):
+def main(
+        output_prefix: str,
+        wkts: list,
+        # resolution_level: int = 0
+    ):
     """
     Main function to process image and WKT files.
 
@@ -192,17 +196,19 @@ def main(image_path: str, wkts: list, resolution_level: int = 0):
     stitched_polygons = drop_empty_polygons(stitched_polygons)
     del polygons
 
-    convert_to_geojson(stitched_polygons, cpus)
-    convert_to_wkt(stitched_polygons, cpus)
+    convert_to_geojson(output_prefix, stitched_polygons, cpus)
+    convert_to_wkt(output_prefix, stitched_polygons, cpus)
 
 def run():
     # define argument parser for command line arguments
     parser = argparse.ArgumentParser(description="merge tiled segmentations")
     # argument declarations
-    parser.add_argument("--image_path", default=None, type=str)
-    parser.add_argument("--resolution_level", default=0, type=int)
+    parser.add_argument("--output_prefix", type=str)
     parser.add_argument("--wkts", nargs="+")
+    # parser.add_argument("--image_path", default=None, type=str)
+    # parser.add_argument("--resolution_level", default=0, type=int)
     parser.add_argument("--version", action="version", version="0.0.2")
+    
     # parse command line arguments
     try:
         args = parser.parse_args()
