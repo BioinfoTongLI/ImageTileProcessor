@@ -67,20 +67,12 @@ def main(image: str, output_name: str, overlap: int = 30, chunk_size: int = 4096
     slices = calculate_slices(lazy_one_plane.shape, chunk_size, overlap)
     write_slices_to_csv(slices, output_name)
 
-
-def version():
-    """
-    Return the version of the script.
-    
-    Returns:
-        str: Version of the script.
-    """
-    return "0.0.1"
-
-
-if __name__ == "__main__":
+def run():
     options = {
         "run": main,
-        "version": version,
+        "version": "0.0.2",
     }
     fire.Fire(options)
+
+if __name__ == "__main__":
+    run() 

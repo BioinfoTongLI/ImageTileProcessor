@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ImageTileProcessor"
-version = "0.1.6"
+version = "0.1.7"
 description = "This is a in-house package to deal with lazy tiled image tile loading to save RAM and various methods to post process tiled outpus s"
 authors = ["Tong Li <tl10@sanger.ac.uk>"]
 license = "MIT"
@@ -12,7 +12,7 @@ keywords = ["image", "tiles", "processing"]
 [tool.poetry.dependencies]
 python = ">=3.8,<3.11"
 # Add your dependencies here
-numpy = "^1.26.0"
+numpy = "^1.24.0"
 fire = "^0.6.0"
 aicsimageio = "^4.12.1"
 shapely = "^2.0.3"
@@ -21,9 +21,9 @@ tifffile = "^2023.2.28"
 tqdm = "^4.67.1"
 
 [tool.poetry.scripts]
-merge-peaks = "imagetileprocessor.merge_peaks:main"
-merge-polygons = "imagetileprocessor.merge_polygons:main"
-tile-2d-image = "imagetileprocessor.tile_2D_image:main"
+merge-peaks = "imagetileprocessor.merge_peaks:run"
+merge-polygons = "imagetileprocessor.merge_polygons:run"
+tile-2d-image = "imagetileprocessor.tile_2D_image:run"
 
 [poetry.group.dev.dependencies]
 pytest = "^6.2.4"

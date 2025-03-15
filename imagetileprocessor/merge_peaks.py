@@ -47,20 +47,13 @@ def main(*csvs, output_name: str, peak_radius: float = 1.5):
     with open(output_name, "w") as file:
         file.write(peaks.wkt)
 
-# Function to return the version of the script
-def version():
-    """
-    Return the version of the script.
-
-    Returns:
-    str: Version of the script.
-    """
-    return "0.0.2"
-
-if __name__ == "__main__":
+def run():
     import fire
     options = {
         "run" : main,
-        "version" : version, 
+        "version" : "0.0.3", 
     }
     fire.Fire(options)
+
+if __name__ == "__main__":
+    run() 

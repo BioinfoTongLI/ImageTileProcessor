@@ -195,8 +195,7 @@ def main(image_path: str, wkts: list, resolution_level: int = 0):
     convert_to_geojson(stitched_polygons, cpus)
     convert_to_wkt(stitched_polygons, cpus)
 
-# Entry point for the script
-if __name__ == "__main__":
+def run():
     # define argument parser for command line arguments
     parser = argparse.ArgumentParser(description="merge tiled segmentations")
     # argument declarations
@@ -216,6 +215,10 @@ if __name__ == "__main__":
     else:
         # invoke main function with parsed arguments
         main(**vars(args))
+
+# Entry point for the script
+if __name__ == "__main__":
+    run() 
 
 #
 # cd /nfs/cellgeni/prete/segmentation/segmentation_benchmark/modules/sanger/merge_outlines/resources/usr/bin
