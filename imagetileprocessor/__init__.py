@@ -32,7 +32,6 @@ def get_tile_from_tifffile(
         dimension_order = [d[0] for d in image.attrs["_ARRAY_DIMENSIONS"]]
         dimension_order = "".join(dimension_order)
 
-    channel = channel + 1 # channel is 0-based in the input
     # Extract the tile based on the dimension order
     if dimension_order=="YX":
         tile = image[ymin:ymax, xmin:xmax]
