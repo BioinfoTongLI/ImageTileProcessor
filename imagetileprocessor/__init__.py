@@ -24,6 +24,8 @@ def get_tile_from_tifffile(
             dimension_order = "YX"
         elif dimension_order == ["Q", "Q", "Q", "Y", "X"]:
             dimension_order = "QQQYX"
+        elif dimension_order == ["C", "Y", "X"]:
+            dimension_order = "CYX"
         else:
             logging.error(f"Unknown dimension order {image.shape}")
         image = zgroup

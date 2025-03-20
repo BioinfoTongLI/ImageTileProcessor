@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ImageTileProcessor"
-version = "0.1.10"
+version = "0.1.11"
 description = "This is a in-house package to deal with lazy tiled image tile loading to save RAM and various methods to post process tiled outpus s"
 authors = ["Tong Li <tl10@sanger.ac.uk>"]
 license = "MIT"
