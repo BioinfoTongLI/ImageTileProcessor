@@ -89,7 +89,7 @@ def read_polygon_as_geojson_feature(geometry):
     """
     return f'{{ "type": "Feature", "geometry": {geometry} }}'
 
-def load_polygons_from_wkts(wkts, cpus):
+def parallel_load_polygons_from_wkts(wkts, cpus):
     """
     Load polygons from WKT files using multiprocessing.
 
@@ -103,6 +103,23 @@ def load_polygons_from_wkts(wkts, cpus):
     logging.info(f"loading polygons from segmented tiles")
     with multiprocessing.Pool(cpus) as pool:
         polygons = list(tqdm.tqdm(pool.imap(read_polygons, wkts), total=len(wkts)))
+    polygons = [p for ps in polygons for p in ps]
+    logging.info(f"loaded {len(polygons)} polygons from {len(wkts)} tiles")
+    return polygons
+
+def load_polygons_from_wkts(wkts):
+    """
+    Load polygons from WKT files without using multiprocessing.
+
+    :param wkts: List of WKT file paths.
+    :type wkts: list
+    :return: List of polygons.
+    :rtype: list
+    """
+    logging.info(f"loading polygons from segmented tiles")
+    polygons = []
+    for wkt_file in tqdm.tqdm(wkts, desc="Loading WKT files"):
+        polygons.append(read_polygons(wkt_file))
     polygons = [p for ps in polygons for p in ps]
     logging.info(f"loaded {len(polygons)} polygons from {len(wkts)} tiles")
     return polygons
@@ -191,7 +208,7 @@ def main(
     cpus = len(os.sched_getaffinity(0))
     logging.info(f"available cpus = {cpus}")
 
-    polygons = load_polygons_from_wkts(wkts, cpus)
+    polygons = load_polygons_from_wkts(wkts)
     stitched_polygons = merge_overlapping_polygons(polygons)
     stitched_polygons = drop_empty_polygons(stitched_polygons)
     del polygons

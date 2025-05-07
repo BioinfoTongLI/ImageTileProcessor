@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ImageTileProcessor"
-version = "0.1.11"
+version = "0.1.15"
 description = "This is a in-house package to deal with lazy tiled image tile loading to save RAM and various methods to post process tiled outpus s"
 authors = ["Tong Li <tl10@sanger.ac.uk>"]
 license = "MIT"
@@ -10,7 +10,7 @@ repository = "https://github.com/BioinfoTongLI/ImageTileProcessor"
 keywords = ["image", "tiles", "processing"]
 
 [tool.poetry.dependencies]
-python = ">=3.8,<=3.11"
+python = "^3.10"
 # Add your dependencies here
 numpy = "^1.24.0"
 fire = "^0.6.0"
