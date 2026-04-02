@@ -3,47 +3,59 @@
 # Copyright (c) 2025 Wellcome Sanger Institute
 
 import argparse
+import json
 import logging
+import multiprocessing
 import os
+
 import shapely
 import shapely.geometry
-import shapely.strtree
 import shapely.ops
+import shapely.strtree
 import shapely.wkt
 import tqdm
-import multiprocessing
 
-# configure logging
 logging.basicConfig(level=logging.INFO)
 
-# Function to read polygons from a WKT file
-def read_polygons(wkt_file):
+
+def read_polygons(wkt_file: str) -> list:
     """
     Read polygons from a WKT file.
 
-    :param wkt_file: Path to the WKT file.
-    :type wkt_file: str
-    :return: List of polygons.
-    :rtype: list
+    The file is expected to contain a single WKT geometry collection
+    (e.g. MULTIPOLYGON or GEOMETRYCOLLECTION).
+
+    Args:
+        wkt_file: Path to the WKT file.
+
+    Returns:
+        List of shapely geometries, each buffered by 0 to fix any topology.
     """
     polygons = []
-    with open(wkt_file, "rt") as wkt:
-        wkt_str = wkt.read().strip()
+    with open(wkt_file, "rt") as f:
+        wkt_str = f.read().strip()
         if wkt_str:
             for polygon in shapely.wkt.loads(wkt_str).geoms:
                 polygons.append(polygon.buffer(0))
     return polygons
 
-# Function to merge overlapping polygons
-def merge_overlapping_polygons(polygons):
-    """
-    Merge overlapping polygons.
 
-    :param polygons: List of polygons.
-    :type polygons: list
-    :return: List of merged polygons.
-    :rtype: list
+def merge_overlapping_polygons(polygons: list) -> list:
     """
+    Merge overlapping polygons into single geometries.
+
+    Uses an STR-tree for fast intersection queries.  Polygons that overlap
+    by more than a 1-pixel inset are grouped and merged with unary_union.
+
+    Args:
+        polygons: List of shapely polygon geometries.
+
+    Returns:
+        List of merged geometries.
+    """
+    if not polygons:
+        return []
+
     tree = shapely.strtree.STRtree(polygons)
     processed = set()
     polygon_groups = []
@@ -55,128 +67,139 @@ def merge_overlapping_polygons(polygons):
         shapely.prepare(poly)
         shrinked = poly.buffer(-1)
         intersect_candidates = tree.query(geometry=poly, predicate="intersects").tolist()
-        intersected = {j for j in intersect_candidates if polygons[j].intersects(shrinked) and j not in processed}
+        intersected = {
+            j for j in intersect_candidates
+            if polygons[j].intersects(shrinked) and j not in processed
+        }
         processed.update(intersected)
         polygon_groups.append(intersected)
 
     final_polygons = []
-    non_overlapping_polygons = 0
-    overlapping_polygons = 0
-    logging.info(f"merging overlapping polygons")
+    non_overlapping = 0
+    overlapping = 0
+    logging.info("merging overlapping polygons")
     for group in tqdm.tqdm(polygon_groups):
         if len(group) == 1:
-            non_overlapping_polygons += len(group)
+            non_overlapping += len(group)
             final_polygons.extend([polygons[i] for i in group])
         else:
-            overlapping_polygons += len(group)
+            overlapping += len(group)
             final_polygons.append(shapely.ops.unary_union([polygons[i] for i in group]))
 
-    logging.info(f"non-overlapping polygons: {non_overlapping_polygons}")
-    logging.info(f"overlapping polygons: {overlapping_polygons}")
+    logging.info(f"non-overlapping polygons: {non_overlapping}")
+    logging.info(f"overlapping polygons: {overlapping}")
     logging.info(f"final polygons: {len(final_polygons)}")
 
     return final_polygons
 
-# Function to convert a polygon geometry to a GeoJSON feature
-def read_polygon_as_geojson_feature(geometry):
-    """
-    Convert a polygon geometry to a GeoJSON feature.
 
-    :param geometry: Polygon geometry.
-    :type geometry: shapely.geometry.Polygon
-    :return: GeoJSON feature as a string.
-    :rtype: str
+def _polygon_to_geojson_feature(geometry_str: str) -> str:
     """
-    return f'{{ "type": "Feature", "geometry": {geometry} }}'
+    Wrap a GeoJSON geometry string in a GeoJSON Feature object.
 
-def parallel_load_polygons_from_wkts(wkts, cpus):
+    Args:
+        geometry_str: A valid GeoJSON geometry string (from shapely.to_geojson).
+
+    Returns:
+        A valid GeoJSON Feature string.
+    """
+    return json.dumps({"type": "Feature", "geometry": json.loads(geometry_str)})
+
+
+def parallel_load_polygons_from_wkts(wkts: list, cpus: int) -> list:
     """
     Load polygons from WKT files using multiprocessing.
 
-    :param wkts: List of WKT file paths.
-    :type wkts: list
-    :param cpus: Number of CPUs to use.
-    :type cpus: int
-    :return: List of polygons.
-    :rtype: list
+    Args:
+        wkts: List of WKT file paths.
+        cpus: Number of worker processes.
+
+    Returns:
+        Flat list of all polygons across all files.
     """
-    logging.info(f"loading polygons from segmented tiles")
+    logging.info("loading polygons from segmented tiles")
     with multiprocessing.Pool(cpus) as pool:
         polygons = list(tqdm.tqdm(pool.imap(read_polygons, wkts), total=len(wkts)))
     polygons = [p for ps in polygons for p in ps]
     logging.info(f"loaded {len(polygons)} polygons from {len(wkts)} tiles")
     return polygons
 
-def load_polygons_from_wkts(wkts):
-    """
-    Load polygons from WKT files without using multiprocessing.
 
-    :param wkts: List of WKT file paths.
-    :type wkts: list
-    :return: List of polygons.
-    :rtype: list
+def load_polygons_from_wkts(wkts: list) -> list:
     """
-    logging.info(f"loading polygons from segmented tiles")
+    Load polygons from WKT files sequentially.
+
+    Args:
+        wkts: List of WKT file paths.
+
+    Returns:
+        Flat list of all polygons across all files.
+    """
+    logging.info("loading polygons from segmented tiles")
     polygons = []
     for wkt_file in tqdm.tqdm(wkts, desc="Loading WKT files"):
-        polygons.append(read_polygons(wkt_file))
-    polygons = [p for ps in polygons for p in ps]
+        polygons.extend(read_polygons(wkt_file))
     logging.info(f"loaded {len(polygons)} polygons from {len(wkts)} tiles")
     return polygons
 
-def drop_empty_polygons(polygons):
-    """
-    Drop empty polygons from the list.
 
-    :param polygons: List of polygons.
-    :type polygons: list
-    :return: List of non-empty polygons.
-    :rtype: list
+def drop_empty_polygons(polygons: list) -> list:
     """
-    logging.info(f"dropping empty polygons")
+    Remove empty geometries from a list.
+
+    Args:
+        polygons: List of shapely geometries.
+
+    Returns:
+        List with empty geometries removed.
+    """
+    logging.info("dropping empty polygons")
     return [p for p in polygons if not p.is_empty]
 
-def convert_to_geojson(output_prefix, stitched_polygons, cpus):
-    """
-    Convert stitched polygons to GeoJSON format and save to a file.
 
-    :param stitched_polygons: List of stitched polygons.
-    :type stitched_polygons: list
-    :param cpus: Number of CPUs to use.
-    :type cpus: int
+def convert_to_geojson(output_prefix: str, stitched_polygons: list, cpus: int):
+    """
+    Convert stitched polygons to a GeoJSON FeatureCollection file.
+
+    Args:
+        output_prefix: Output file path without extension.
+        stitched_polygons: List of shapely geometries to export.
+        cpus: Number of worker processes for parallel serialisation.
     """
     geojson_output_filename = f"{output_prefix}.geojson"
-    logging.info(f"reading polygons as GeoJSON (may take a while)")
+    logging.info("reading polygons as GeoJSON (may take a while)")
     geojson_list = shapely.to_geojson(stitched_polygons).tolist()
-    logging.info(f"converting segmentations to GeoJSON Feature")
+
+    logging.info("converting segmentations to GeoJSON Features")
     with multiprocessing.Pool(cpus) as pool:
         geojson_features = list(
             tqdm.tqdm(
-                pool.imap(read_polygon_as_geojson_feature, geojson_list),
+                pool.imap(_polygon_to_geojson_feature, geojson_list),
                 total=len(geojson_list),
             )
         )
+
     logging.info(f"writing GeoJSON FeatureCollection as '{geojson_output_filename}'")
+    feature_collection = (
+        '{"type":"FeatureCollection","features":['
+        + ",".join(geojson_features)
+        + "]}"
+    )
     with open(geojson_output_filename, "wt") as f:
-        geojson_output = f"""{{
-            "type": "FeatureCollection",
-            "features": [{",".join(geojson_features)}]
-        }}"""
-        f.write(geojson_output)
-    del geojson_features
-    del geojson_output
+        f.write(feature_collection)
 
-def convert_to_wkt(output_prefix, stitched_polygons, cpus):
+
+def convert_to_wkt(output_prefix: str, stitched_polygons: list, cpus: int):
     """
-    Convert stitched polygons to WKT format and save to a file.
+    Convert stitched polygons to a WKT file, one polygon per line.
 
-    :param stitched_polygons: List of stitched polygons.
-    :type stitched_polygons: list
-    :param cpus: Number of CPUs to use.
-    :type cpus: int
+    Args:
+        output_prefix: Output file path without extension.
+        stitched_polygons: List of shapely geometries to export.
+        cpus: Number of worker processes for parallel serialisation.
     """
     wkt_output_filename = f"{output_prefix}.wkt"
-    logging.info(f"converting segmentations to well-known-text polygons")
+    logging.info("converting segmentations to well-known-text polygons")
     with multiprocessing.Pool(cpus) as pool:
         wkt_strings = list(
             tqdm.tqdm(
@@ -189,21 +212,15 @@ def convert_to_wkt(output_prefix, stitched_polygons, cpus):
         for wkt_line in tqdm.tqdm(wkt_strings):
             f.write(wkt_line + "\n")
 
-# Main function to process image and WKT files
-def main(
-        output_prefix: str,
-        wkts: list,
-        # resolution_level: int = 0
-    ):
-    """
-    Main function to process image and WKT files.
 
-    :param image_path: Path to the image file.
-    :type image_path: str
-    :param wkts: List of WKT file paths.
-    :type wkts: list
-    :param resolution_level: Resolution level.
-    :type resolution_level: int
+def main(output_prefix: str, wkts: list):
+    """
+    Merge tiled polygon segmentations and write GeoJSON and WKT outputs.
+
+    Args:
+        output_prefix: Prefix for output files (without extension).
+            Produces ``<output_prefix>.geojson`` and ``<output_prefix>.wkt``.
+        wkts: List of WKT file paths, one per image tile.
     """
     cpus = len(os.sched_getaffinity(0))
     logging.info(f"available cpus = {cpus}")
@@ -211,39 +228,27 @@ def main(
     polygons = load_polygons_from_wkts(wkts)
     stitched_polygons = merge_overlapping_polygons(polygons)
     stitched_polygons = drop_empty_polygons(stitched_polygons)
-    del polygons
 
     convert_to_geojson(output_prefix, stitched_polygons, cpus)
     convert_to_wkt(output_prefix, stitched_polygons, cpus)
 
+
 def run():
-    # define argument parser for command line arguments
-    parser = argparse.ArgumentParser(description="merge tiled segmentations")
-    # argument declarations
-    parser.add_argument("--output_prefix", type=str)
-    parser.add_argument("--wkts", nargs="+")
-    # parser.add_argument("--image_path", default=None, type=str)
-    # parser.add_argument("--resolution_level", default=0, type=int)
-    parser.add_argument("--version", action="version", version="0.0.2")
-    
-    # parse command line arguments
+    parser = argparse.ArgumentParser(description="Merge tiled polygon segmentations")
+    parser.add_argument("--output_prefix", type=str, required=True)
+    parser.add_argument("--wkts", nargs="+", required=True)
+    parser.add_argument("--version", action="version", version="0.1.16")
+
     try:
         args = parser.parse_args()
+    except SystemExit:
+        raise
     except Exception as ex:
         parser.print_help()
-        SystemExit(ex)
+        raise SystemExit(ex)
 
-    if "version" in args:
-        print(args.version)
-    else:
-        # invoke main function with parsed arguments
-        main(**vars(args))
+    main(**vars(args))
 
-# Entry point for the script
+
 if __name__ == "__main__":
-    run() 
-
-#
-# cd /nfs/cellgeni/prete/segmentation/segmentation_benchmark/modules/sanger/merge_outlines/resources/usr/bin
-# singularity shell -B /lustre,/nfs /nfs/cellgeni/prete/segmentation/segmentation_benchmark/containers/segmentation-benchmark-utils.sif
-#
+    run()

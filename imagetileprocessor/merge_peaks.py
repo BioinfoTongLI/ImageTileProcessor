@@ -3,57 +3,62 @@
 # Copyright (c) 2025 Wellcome Sanger Institute
 
 """
-A simple script to merge peaks from adjacent&partially overlaping tiles.
+A simple script to merge peaks from adjacent & partially overlapping tiles.
 
 This script reads multiple CSV files containing peak coordinates,
 merges overlapping peaks, and writes the merged peaks to an output file.
 
 Functions:
     main(*csvs, output_name: str, peak_radius: float = 1.5)
-    version()
 """
 
-import dask.dataframe as dd
+import pandas as pd
 from shapely.geometry import Point, MultiPoint
 from shapely.ops import unary_union
 
-# Main function to merge peaks from multiple CSV files
-def main(*csvs, output_name: str, peak_radius: float = 1.5):
+
+def main(*csvs: str, output_name: str, peak_radius: float = 1.5):
     """
     Merge peaks from multiple CSV files and write the result to an output file.
 
-    Parameters:
-    csvs (str): Paths to the input CSV files.
-    output_name (str): Path to the output file.
-    peak_radius (float): Radius to use for merging peaks. Default is 1.5.
+    Reads CSV files where the first column is the Y coordinate and the second
+    column is the X coordinate.  Points within ``peak_radius`` of each other
+    are merged and replaced by their centroid.
 
-    Returns:
-    None
+    Args:
+        *csvs: Paths to the input CSV files.
+        output_name: Path for the output WKT file.
+        peak_radius: Radius used to buffer points before merging. Default 1.5.
     """
-    df = dd.read_csv(csvs).compute()
-    points= []
+    if not csvs:
+        raise ValueError("At least one input CSV file must be provided")
+
+    df = pd.concat([pd.read_csv(f) for f in csvs], ignore_index=True)
+
+    points = []
     for coord in df.values:
         points.append(Point(coord[1], coord[0]))
-    # Create a buffer around each point
-    buffers = [point.buffer(peak_radius) for point in points]
 
-    # Merge overlapping buffers
+    # Buffer each point and merge overlapping buffers
+    buffers = [point.buffer(peak_radius) for point in points]
     merged = unary_union(buffers)
 
-    # Get the centroid of each merged geometry
+    # Replace each merged region with its centroid
     peaks = MultiPoint([g.centroid for g in merged.geoms])
 
-    # Dump the merged multipolygon in WKT format
-    with open(output_name, "w") as file:
-        file.write(peaks.wkt)
+    with open(output_name, "w") as f:
+        f.write(peaks.wkt)
+
 
 def run():
     import fire
+
     options = {
-        "run" : main,
-        "version" : "0.0.3", 
+        "run": main,
+        "version": "0.1.16",
     }
     fire.Fire(options)
 
+
 if __name__ == "__main__":
-    run() 
+    run()
