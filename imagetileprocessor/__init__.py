@@ -101,9 +101,9 @@ def slice_and_crop_image(
     """
     Extract a tile from any supported image format.
 
-    For TIFF files this uses a zarr-backed lazy load so only the requested
-    tile is read from disk.  For other formats the whole Z/C plane is loaded
-    first and then cropped (higher memory usage).
+    Tries the zarr-backed tifffile loader first (lazy, low memory).  If that
+    fails for any reason, falls back to AICSImage which loads the whole Z/C
+    plane before cropping (higher memory footprint).
 
     Args:
         image_p: Path to the image file.
@@ -113,12 +113,12 @@ def slice_and_crop_image(
         y_max: Bottom boundary of the tile.
         zs: Z-plane indices to extract.
         channel: Channel indices to extract.
-        resolution_level: Pyramid resolution level (TIFF only).
+        resolution_level: Pyramid resolution level (tifffile only).
 
     Returns:
         numpy.ndarray: The extracted tile.
     """
-    if image_p.endswith(".tif") or image_p.endswith(".tiff"):
+    try:
         crop = get_tile_from_tifffile(
             image_p,
             x_min,
@@ -129,8 +129,9 @@ def slice_and_crop_image(
             channel=channel,
             resolution_level=resolution_level,
         )
-    else:
-        # Loads the whole plane then crops — higher memory footprint for non-TIFF files
+    except Exception as e:
+        logging.warning(f"tifffile loader failed ({e}), falling back to AICSImage")
+        # Loads the whole plane then crops — higher memory footprint
         img = AICSImage(image_p)
         lazy_one_plane = img.get_image_dask_data(
             "ZCYX", T=0, C=channel, Z=zs
