@@ -1,32 +1,39 @@
-[tool.poetry]
+[project]
 name = "ImageTileProcessor"
-version = "0.1.15"
-description = "This is a in-house package to deal with lazy tiled image tile loading to save RAM and various methods to post process tiled outpus s"
-authors = ["Tong Li <tl10@sanger.ac.uk>"]
-license = "MIT"
+version = "0.1.16"
+description = "An in-house package for lazy tiled image loading to save RAM and various methods to post-process tiled outputs"
+authors = [
+    { name = "Tong Li", email = "tl10@sanger.ac.uk" },
+]
+license = { text = "MIT" }
 readme = "README.md"
-homepage = "https://github.com/BioinfoTongLI/ImageTileProcessor"
-repository = "https://github.com/BioinfoTongLI/ImageTileProcessor"
 keywords = ["image", "tiles", "processing"]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24.0",
+    "fire>=0.6.0",
+    "aicsimageio[all]>=4.12.1",
+    "shapely>=2.0.3",
+    "pandas>=2.0.0",
+    "tifffile>=2022.4.8",
+    "tqdm>=4.67.1",
+    "bioformats-jar>=2020.5.27",
+]
 
-[tool.poetry.dependencies]
-python = "^3.10"
-# Add your dependencies here
-numpy = "^1.24.0"
-fire = "^0.6.0"
-aicsimageio = "^4.12.1"
-shapely = "^2.0.3"
-tifffile = "^2024.7.24"
-tqdm = "^4.67.1"
+[project.urls]
+Homepage = "https://github.com/BioinfoTongLI/ImageTileProcessor"
+Repository = "https://github.com/BioinfoTongLI/ImageTileProcessor"
 
-[tool.poetry.scripts]
+[project.scripts]
 merge-peaks = "imagetileprocessor.merge_peaks:run"
 merge-polygons = "imagetileprocessor.merge_polygons:run"
 tile-2d-image = "imagetileprocessor.tile_2D_image:run"
 
-[poetry.group.dev.dependencies]
-pytest = "^6.2.4"
+[dependency-groups]
+dev = [
+    "pytest>=6.2.4",
+]
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
