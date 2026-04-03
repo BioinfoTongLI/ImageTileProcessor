@@ -43,8 +43,10 @@ def main(*csvs: str, output_name: str, peak_radius: float = 1.5):
     buffers = [point.buffer(peak_radius) for point in points]
     merged = unary_union(buffers)
 
-    # Replace each merged region with its centroid
-    peaks = MultiPoint([g.centroid for g in merged.geoms])
+    # Replace each merged region with its centroid.
+    # unary_union may return a bare Polygon when all buffers overlap into one.
+    regions = merged.geoms if hasattr(merged, "geoms") else [merged]
+    peaks = MultiPoint([g.centroid for g in regions])
 
     with open(output_name, "w") as f:
         f.write(peaks.wkt)
