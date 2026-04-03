@@ -1,141 +1,104 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # Copyright (c) 2025 Wellcome Sanger Institute
+"""
+merge_polygons.py — stitch tiled polygon segmentations into a single dataset.
 
-import argparse
+Workflow
+--------
+1. Load per-tile WKT files (in parallel or sequentially).
+2. Validate and repair any geometrically invalid polygons.
+3. Merge polygons that overlap by more than a 1-pixel margin.
+4. Drop any empty geometries produced during merging.
+5. Write the result as both GeoJSON (FeatureCollection) and WKT.
+
+Each GeoJSON Feature is assigned a stable UUID4 in its top-level ``id``
+field, conforming to RFC 7946.
+"""
+
 import json
 import logging
 import multiprocessing
 import os
+import uuid
+
+import click
 
 import shapely
 import shapely.geometry
 import shapely.ops
 import shapely.strtree
+import shapely.validation
 import shapely.wkt
 import tqdm
 
 logging.basicConfig(level=logging.INFO)
 
 
-def read_polygons(wkt_file: str) -> list:
-    """
-    Read polygons from a WKT file.
+# ---------------------------------------------------------------------------
+# I/O helpers
+# ---------------------------------------------------------------------------
 
-    The file is expected to contain a single WKT geometry collection
-    (e.g. MULTIPOLYGON or GEOMETRYCOLLECTION).
+
+def read_polygons(wkt_file: str) -> list[shapely.geometry.base.BaseGeometry]:
+    """Read polygons from a WKT file.
+
+    The file must contain a single WKT geometry collection (e.g.
+    ``MULTIPOLYGON`` or ``GEOMETRYCOLLECTION``).  Each component geometry is
+    buffered by 0 to normalise ring orientation and close any minor gaps left
+    by the serialiser.
 
     Args:
         wkt_file: Path to the WKT file.
 
     Returns:
-        List of shapely geometries, each buffered by 0 to fix any topology.
+        List of shapely geometries, one per component of the collection.
+        Returns an empty list if the file is empty.
     """
     polygons = []
     with open(wkt_file, "rt") as f:
         wkt_str = f.read().strip()
-        if wkt_str:
-            for polygon in shapely.wkt.loads(wkt_str).geoms:
-                polygons.append(polygon.buffer(0))
+    if wkt_str:
+        for polygon in shapely.wkt.loads(wkt_str).geoms:
+            polygons.append(polygon.buffer(0))
     return polygons
 
 
-def merge_overlapping_polygons(polygons: list) -> list:
-    """
-    Merge overlapping polygons into single geometries.
-
-    Uses an STR-tree for fast intersection queries.  Polygons that overlap
-    by more than a 1-pixel inset are grouped and merged with unary_union.
+def parallel_load_polygons_from_wkts(
+    wkts: list[str], cpus: int
+) -> list[shapely.geometry.base.BaseGeometry]:
+    """Load polygons from multiple WKT files using a multiprocessing pool.
 
     Args:
-        polygons: List of shapely polygon geometries.
-
-    Returns:
-        List of merged geometries.
-    """
-    if not polygons:
-        return []
-
-    tree = shapely.strtree.STRtree(polygons)
-    processed = set()
-    polygon_groups = []
-
-    logging.info("finding overlapping polygons")
-    for pdi, poly in tqdm.tqdm(enumerate(polygons), total=len(polygons)):
-        if pdi in processed:
-            continue
-        shapely.prepare(poly)
-        shrinked = poly.buffer(-1)
-        intersect_candidates = tree.query(geometry=poly, predicate="intersects").tolist()
-        intersected = {
-            j for j in intersect_candidates
-            if polygons[j].intersects(shrinked) and j not in processed
-        }
-        processed.update(intersected)
-        polygon_groups.append(intersected)
-
-    final_polygons = []
-    non_overlapping = 0
-    overlapping = 0
-    logging.info("merging overlapping polygons")
-    for group in tqdm.tqdm(polygon_groups):
-        if len(group) == 1:
-            non_overlapping += len(group)
-            final_polygons.extend([polygons[i] for i in group])
-        else:
-            overlapping += len(group)
-            final_polygons.append(shapely.ops.unary_union([polygons[i] for i in group]))
-
-    logging.info(f"non-overlapping polygons: {non_overlapping}")
-    logging.info(f"overlapping polygons: {overlapping}")
-    logging.info(f"final polygons: {len(final_polygons)}")
-
-    return final_polygons
-
-
-def _polygon_to_geojson_feature(geometry_str: str) -> str:
-    """
-    Wrap a GeoJSON geometry string in a GeoJSON Feature object.
-
-    Args:
-        geometry_str: A valid GeoJSON geometry string (from shapely.to_geojson).
-
-    Returns:
-        A valid GeoJSON Feature string.
-    """
-    return json.dumps({"type": "Feature", "geometry": json.loads(geometry_str)})
-
-
-def parallel_load_polygons_from_wkts(wkts: list, cpus: int) -> list:
-    """
-    Load polygons from WKT files using multiprocessing.
-
-    Args:
-        wkts: List of WKT file paths.
+        wkts: WKT file paths, one per image tile.
         cpus: Number of worker processes.
 
     Returns:
-        Flat list of all polygons across all files.
+        Flat list of all polygons from all tiles.
     """
-    logging.info("loading polygons from segmented tiles")
+    logging.info("loading polygons from segmented tiles (parallel)")
     with multiprocessing.Pool(cpus) as pool:
-        polygons = list(tqdm.tqdm(pool.imap(read_polygons, wkts), total=len(wkts)))
-    polygons = [p for ps in polygons for p in ps]
+        per_tile = list(tqdm.tqdm(pool.imap(read_polygons, wkts), total=len(wkts)))
+    polygons = [p for tile in per_tile for p in tile]
     logging.info(f"loaded {len(polygons)} polygons from {len(wkts)} tiles")
     return polygons
 
 
-def load_polygons_from_wkts(wkts: list) -> list:
-    """
-    Load polygons from WKT files sequentially.
+def load_polygons_from_wkts(
+    wkts: list[str],
+) -> list[shapely.geometry.base.BaseGeometry]:
+    """Load polygons from multiple WKT files sequentially.
+
+    Prefer this over the parallel variant when the number of tiles is small
+    or when multiprocessing overhead would dominate.
 
     Args:
-        wkts: List of WKT file paths.
+        wkts: WKT file paths, one per image tile.
 
     Returns:
-        Flat list of all polygons across all files.
+        Flat list of all polygons from all tiles.
     """
-    logging.info("loading polygons from segmented tiles")
+    logging.info("loading polygons from segmented tiles (sequential)")
     polygons = []
     for wkt_file in tqdm.tqdm(wkts, desc="Loading WKT files"):
         polygons.extend(read_polygons(wkt_file))
@@ -143,63 +106,242 @@ def load_polygons_from_wkts(wkts: list) -> list:
     return polygons
 
 
-def drop_empty_polygons(polygons: list) -> list:
+# ---------------------------------------------------------------------------
+# Geometry validation & cleaning
+# ---------------------------------------------------------------------------
+
+
+def check_polygon_validity(
+    polygons: list[shapely.geometry.base.BaseGeometry],
+) -> list[shapely.geometry.base.BaseGeometry]:
+    """Validate polygons and repair any that are geometrically invalid.
+
+    A polygon is invalid when it violates the OGC Simple Features rules —
+    common causes include self-intersections, repeated points, and unclosed
+    rings.  Invalid geometries cause silent failures in spatial operations
+    such as intersection tests and union.
+
+    Each invalid polygon is repaired in-place using
+    :func:`shapely.validation.make_valid`, which may split a self-intersecting
+    polygon into a ``GEOMETRYCOLLECTION`` of smaller, valid parts.  Those
+    parts are flattened back into the output list so the polygon count may
+    increase slightly.
+
+    Args:
+        polygons: List of shapely geometries to validate.
+
+    Returns:
+        New list where every geometry satisfies ``polygon.is_valid``.
+        Valid geometries are passed through unchanged.
     """
-    Remove empty geometries from a list.
+    n_invalid = sum(1 for p in polygons if not p.is_valid)
+    if n_invalid == 0:
+        logging.info("all polygons are valid")
+        return polygons
+
+    logging.warning(
+        f"{n_invalid}/{len(polygons)} invalid polygons found — repairing with make_valid"
+    )
+
+    repaired: list[shapely.geometry.base.BaseGeometry] = []
+    for poly in tqdm.tqdm(polygons, desc="Validating polygons"):
+        if poly.is_valid:
+            repaired.append(poly)
+            continue
+
+        fixed = shapely.validation.make_valid(poly)
+
+        # make_valid may return a GeometryCollection containing the repaired
+        # parts; flatten those into individual polygons.
+        if hasattr(fixed, "geoms"):
+            repaired.extend(part for part in fixed.geoms if not part.is_empty)
+        elif not fixed.is_empty:
+            repaired.append(fixed)
+
+    n_still_invalid = sum(1 for p in repaired if not p.is_valid)
+    if n_still_invalid:
+        logging.error(
+            f"{n_still_invalid} polygon(s) could not be repaired and will be kept as-is"
+        )
+
+    logging.info(
+        f"validity check complete: {len(polygons)} → {len(repaired)} geometries"
+    )
+    return repaired
+
+
+def drop_empty_polygons(
+    polygons: list[shapely.geometry.base.BaseGeometry],
+) -> list[shapely.geometry.base.BaseGeometry]:
+    """Remove empty geometries from a list.
+
+    Empty geometries (``GEOMETRYCOLLECTION EMPTY``, etc.) can arise after
+    merging or repairing polygons.  They carry no spatial information and
+    would produce degenerate GeoJSON features.
 
     Args:
         polygons: List of shapely geometries.
 
     Returns:
-        List with empty geometries removed.
+        New list with all empty geometries removed.
     """
-    logging.info("dropping empty polygons")
-    return [p for p in polygons if not p.is_empty]
+    before = len(polygons)
+    result = [p for p in polygons if not p.is_empty]
+    dropped = before - len(result)
+    if dropped:
+        logging.info(f"dropped {dropped} empty geometry/geometries")
+    return result
 
 
-def convert_to_geojson(output_prefix: str, stitched_polygons: list, cpus: int):
-    """
-    Convert stitched polygons to a GeoJSON FeatureCollection file.
+# ---------------------------------------------------------------------------
+# Merging
+# ---------------------------------------------------------------------------
+
+
+def merge_overlapping_polygons(
+    polygons: list[shapely.geometry.base.BaseGeometry],
+) -> list[shapely.geometry.base.BaseGeometry]:
+    """Merge polygons that overlap by more than a 1-pixel margin.
+
+    Two polygons are considered overlapping when one intersects the other
+    *after* the other has been inset by 1 pixel (``buffer(-1)``).  This
+    tolerance prevents merging polygons that share only a common edge or a
+    single point — artefacts that naturally arise at tile boundaries.
+
+    The algorithm uses a Shapely STR-tree for fast bounding-box pre-filtering,
+    then performs exact intersection tests only on the candidates returned by
+    the tree.  Overlapping polygons are grouped transitively and merged into a
+    single geometry with :func:`shapely.ops.unary_union`.
 
     Args:
-        output_prefix: Output file path without extension.
-        stitched_polygons: List of shapely geometries to export.
+        polygons: List of shapely polygon geometries.
+
+    Returns:
+        List of merged geometries.  Polygons with no overlapping neighbours
+        are returned unchanged.
+    """
+    if not polygons:
+        return []
+
+    tree = shapely.strtree.STRtree(polygons)
+    processed: set[int] = set()
+    polygon_groups: list[set[int]] = []
+
+    logging.info("finding overlapping polygons")
+    for idx, poly in tqdm.tqdm(enumerate(polygons), total=len(polygons)):
+        if idx in processed:
+            continue
+        shapely.prepare(poly)
+        inset = poly.buffer(-1)
+        candidates = tree.query(geometry=poly, predicate="intersects").tolist()
+        overlapping = {
+            j
+            for j in candidates
+            if j not in processed and polygons[j].intersects(inset)
+        }
+        processed.update(overlapping)
+        polygon_groups.append(overlapping)
+
+    merged: list[shapely.geometry.base.BaseGeometry] = []
+    n_non_overlapping = 0
+    n_overlapping = 0
+
+    logging.info("merging overlapping polygon groups")
+    for group in tqdm.tqdm(polygon_groups):
+        if len(group) == 1:
+            n_non_overlapping += 1
+            merged.extend(polygons[i] for i in group)
+        else:
+            n_overlapping += len(group)
+            merged.append(shapely.ops.unary_union([polygons[i] for i in group]))
+
+    logging.info(f"non-overlapping polygons: {n_non_overlapping}")
+    logging.info(f"polygons merged away:     {n_overlapping}")
+    logging.info(f"final polygon count:      {len(merged)}")
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# Output serialisation
+# ---------------------------------------------------------------------------
+
+
+def _polygon_to_geojson_feature(geometry_str: str) -> str:
+    """Serialise one GeoJSON geometry string as a GeoJSON Feature.
+
+    A UUID4 is generated for each call and stored in the Feature's top-level
+    ``id`` member, following RFC 7946 §3.2.  This gives every exported polygon
+    a stable, unique identifier that downstream tools (e.g. QuPath, QGIS) can
+    use for selection and cross-referencing.
+
+    Args:
+        geometry_str: A valid GeoJSON geometry string as returned by
+            :func:`shapely.to_geojson`.
+
+    Returns:
+        A JSON-serialised GeoJSON Feature string with ``type``, ``id``,
+        and ``geometry`` members.
+    """
+    feature = {
+        "type": "Feature",
+        "id": str(uuid.uuid4()),
+        "geometry": json.loads(geometry_str),
+    }
+    return json.dumps(feature)
+
+
+def convert_to_geojson(
+    output_prefix: str,
+    stitched_polygons: list[shapely.geometry.base.BaseGeometry],
+    cpus: int,
+) -> None:
+    """Write stitched polygons to a GeoJSON FeatureCollection file.
+
+    Each feature is assigned a unique UUID4 ``id`` and empty ``properties``.
+    Serialisation is parallelised across ``cpus`` workers.
+
+    Args:
+        output_prefix: Output path without extension.
+            The file is written to ``<output_prefix>.geojson``.
+        stitched_polygons: Merged shapely geometries to export.
         cpus: Number of worker processes for parallel serialisation.
     """
-    geojson_output_filename = f"{output_prefix}.geojson"
-    logging.info("reading polygons as GeoJSON (may take a while)")
+    out_path = f"{output_prefix}.geojson"
+    logging.info("serialising polygons to GeoJSON geometry strings")
     geojson_list = shapely.to_geojson(stitched_polygons).tolist()
 
-    logging.info("converting segmentations to GeoJSON Features")
+    logging.info("wrapping geometries in GeoJSON Features")
     with multiprocessing.Pool(cpus) as pool:
-        geojson_features = list(
+        features = list(
             tqdm.tqdm(
                 pool.imap(_polygon_to_geojson_feature, geojson_list),
                 total=len(geojson_list),
             )
         )
 
-    logging.info(f"writing GeoJSON FeatureCollection as '{geojson_output_filename}'")
     feature_collection = (
-        '{"type":"FeatureCollection","features":['
-        + ",".join(geojson_features)
-        + "]}"
+        '{"type":"FeatureCollection","features":[' + ",".join(features) + "]}"
     )
-    with open(geojson_output_filename, "wt") as f:
+    logging.info(f"writing GeoJSON FeatureCollection to '{out_path}'")
+    with open(out_path, "wt") as f:
         f.write(feature_collection)
 
 
-def convert_to_wkt(output_prefix: str, stitched_polygons: list, cpus: int):
-    """
-    Convert stitched polygons to a WKT file, one polygon per line.
+def convert_to_wkt(
+    output_prefix: str,
+    stitched_polygons: list[shapely.geometry.base.BaseGeometry],
+    cpus: int,
+) -> None:
+    """Write stitched polygons to a WKT file, one polygon per line.
 
     Args:
-        output_prefix: Output file path without extension.
-        stitched_polygons: List of shapely geometries to export.
+        output_prefix: Output path without extension.
+            The file is written to ``<output_prefix>.wkt``.
+        stitched_polygons: Merged shapely geometries to export.
         cpus: Number of worker processes for parallel serialisation.
     """
-    wkt_output_filename = f"{output_prefix}.wkt"
-    logging.info("converting segmentations to well-known-text polygons")
+    out_path = f"{output_prefix}.wkt"
+    logging.info("serialising polygons to WKT")
     with multiprocessing.Pool(cpus) as pool:
         wkt_strings = list(
             tqdm.tqdm(
@@ -207,47 +349,58 @@ def convert_to_wkt(output_prefix: str, stitched_polygons: list, cpus: int):
                 total=len(stitched_polygons),
             )
         )
-    logging.info(f"writing segmentation as well-known-text as '{wkt_output_filename}'")
-    with open(wkt_output_filename, "w") as f:
-        for wkt_line in tqdm.tqdm(wkt_strings):
-            f.write(wkt_line + "\n")
+    logging.info(f"writing WKT to '{out_path}'")
+    with open(out_path, "w") as f:
+        for line in wkt_strings:
+            f.write(line + "\n")
 
 
-def main(output_prefix: str, wkts: list):
-    """
-    Merge tiled polygon segmentations and write GeoJSON and WKT outputs.
+# ---------------------------------------------------------------------------
+# Pipeline entry point
+# ---------------------------------------------------------------------------
+
+
+def main(output_prefix: str, wkts: list[str]) -> None:
+    """Run the full merge pipeline and write GeoJSON and WKT outputs.
+
+    Steps:
+
+    1. Load per-tile WKT files sequentially.
+    2. Validate and repair invalid geometries.
+    3. Merge overlapping polygons (1-pixel inset tolerance).
+    4. Drop any empty geometries.
+    5. Write ``<output_prefix>.geojson`` and ``<output_prefix>.wkt``.
 
     Args:
         output_prefix: Prefix for output files (without extension).
-            Produces ``<output_prefix>.geojson`` and ``<output_prefix>.wkt``.
-        wkts: List of WKT file paths, one per image tile.
+        wkts: WKT file paths, one per image tile.
     """
     cpus = len(os.sched_getaffinity(0))
-    logging.info(f"available cpus = {cpus}")
+    logging.info(f"available CPUs: {cpus}")
 
     polygons = load_polygons_from_wkts(wkts)
-    stitched_polygons = merge_overlapping_polygons(polygons)
-    stitched_polygons = drop_empty_polygons(stitched_polygons)
+    polygons = check_polygon_validity(polygons)
+    merged = merge_overlapping_polygons(polygons)
+    merged = drop_empty_polygons(merged)
 
-    convert_to_geojson(output_prefix, stitched_polygons, cpus)
-    convert_to_wkt(output_prefix, stitched_polygons, cpus)
+    convert_to_geojson(output_prefix, merged, cpus)
+    convert_to_wkt(output_prefix, merged, cpus)
 
 
-def run():
-    parser = argparse.ArgumentParser(description="Merge tiled polygon segmentations")
-    parser.add_argument("--output_prefix", type=str, required=True)
-    parser.add_argument("--wkts", nargs="+", required=True)
-    parser.add_argument("--version", action="version", version="0.1.16")
+@click.command()
+@click.version_option("0.1.16")
+@click.option(
+    "--output_prefix",
+    required=True,
+    help="Output file path without extension.",
+)
+@click.argument("wkts", nargs=-1, required=True)
+def run(output_prefix: str, wkts: tuple[str, ...]) -> None:
+    """Merge tiled polygon segmentations into a single GeoJSON/WKT dataset.
 
-    try:
-        args = parser.parse_args()
-    except SystemExit:
-        raise
-    except Exception as ex:
-        parser.print_help()
-        raise SystemExit(ex)
-
-    main(**vars(args))
+    WKTS are one or more WKT files produced by per-tile segmentation.
+    """
+    main(output_prefix=output_prefix, wkts=list(wkts))
 
 
 if __name__ == "__main__":
