@@ -16,6 +16,7 @@ dependencies = [
     "shapely>=2.0.3",
     "pandas>=2.0.0",
     "tifffile>=2022.4.8",
+    "click>=8.0.0",
     "tqdm>=4.67.1",
     "bioformats-jar>=2020.5.27",
 ]
