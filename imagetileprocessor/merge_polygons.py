@@ -280,12 +280,14 @@ def _polygon_to_geojson_feature(geometry_str: str) -> str:
 
     Returns:
         A JSON-serialised GeoJSON Feature string with ``type``, ``id``,
-        and ``geometry`` members.
+        ``geometry``, and ``properties`` (``null``) members, as required
+        by RFC 7946 §3.2.
     """
     feature = {
         "type": "Feature",
         "id": str(uuid.uuid4()),
         "geometry": json.loads(geometry_str),
+        "properties": None,
     }
     return json.dumps(feature)
 

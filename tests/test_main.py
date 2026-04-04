@@ -373,9 +373,10 @@ class TestPolygonToGeoJsonFeature:
         ids = {json.loads(_polygon_to_geojson_feature(geojson_str))["id"] for _ in range(10)}
         assert len(ids) == 10
 
-    def test_no_properties_key(self):
+    def test_properties_is_null(self):
         parsed = self._feature(Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]))
-        assert "properties" not in parsed
+        assert "properties" in parsed
+        assert parsed["properties"] is None
 
 
 # ---------------------------------------------------------------------------
