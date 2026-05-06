@@ -318,6 +318,21 @@ class TestMergeOverlappingPolygons:
         result = merge_overlapping_polygons([p1, p2])
         assert len(result) == 2
 
+    def test_small_polygon_inside_large_polygon_is_merged(self):
+        large = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+        small = Polygon([(2, 2), (3, 2), (3, 3), (2, 3)])
+        result = merge_overlapping_polygons([small, large])
+        assert len(result) == 1
+
+    def test_output_order_is_deterministic_for_reversed_input(self):
+        p1 = Polygon([(10, 0), (12, 0), (12, 2), (10, 2)])
+        p2 = Polygon([(0, 0), (2, 0), (2, 2), (0, 2)])
+        first = merge_overlapping_polygons([p1, p2])
+        second = merge_overlapping_polygons([p2, p1])
+        assert [shapely.to_wkb(p, hex=True) for p in first] == [
+            shapely.to_wkb(p, hex=True) for p in second
+        ]
+
 
 # ---------------------------------------------------------------------------
 # drop_empty_polygons
@@ -362,15 +377,23 @@ class TestPolygonToGeoJsonFeature:
         parsed = self._feature(Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]))
         assert "id" in parsed
 
-    def test_id_is_valid_uuid4(self):
+    def test_id_is_valid_uuid5(self):
         parsed = self._feature(Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]))
         # Must not raise
-        val = uuid.UUID(parsed["id"], version=4)
-        assert val.version == 4
+        val = uuid.UUID(parsed["id"], version=5)
+        assert val.version == 5
 
-    def test_each_call_produces_unique_id(self):
+    def test_same_geometry_produces_same_id(self):
         geojson_str = shapely.to_geojson(Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]))
         ids = {json.loads(_polygon_to_geojson_feature(geojson_str))["id"] for _ in range(10)}
+        assert len(ids) == 1
+
+    def test_indexed_duplicate_geometry_ids_are_unique(self):
+        geojson_str = shapely.to_geojson(Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]))
+        ids = {
+            json.loads(_polygon_to_geojson_feature((idx, geojson_str)))["id"]
+            for idx in range(10)
+        }
         assert len(ids) == 10
 
     def test_properties_is_null(self):
@@ -411,7 +434,7 @@ class TestConvertToGeoJson:
                 fc = json.load(f)
             feat = fc["features"][0]
             assert "id" in feat
-            uuid.UUID(feat["id"], version=4)  # must not raise
+            uuid.UUID(feat["id"], version=5)  # must not raise
         finally:
             path = f"{prefix}.geojson"
             if os.path.exists(path):
@@ -429,6 +452,25 @@ class TestConvertToGeoJson:
                 fc = json.load(f)
             ids = [feat["id"] for feat in fc["features"]]
             assert len(ids) == len(set(ids))
+        finally:
+            path = f"{prefix}.geojson"
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_output_is_deterministic(self):
+        polys = [
+            Polygon([(10, 0), (15, 0), (15, 5), (10, 5)]),
+            Polygon([(0, 0), (5, 0), (5, 5), (0, 5)]),
+        ]
+        prefix = _tmp_path()
+        try:
+            convert_to_geojson(prefix, polys, cpus=1)
+            with open(f"{prefix}.geojson") as f:
+                first = f.read()
+            convert_to_geojson(prefix, list(reversed(polys)), cpus=1)
+            with open(f"{prefix}.geojson") as f:
+                second = f.read()
+            assert first == second
         finally:
             path = f"{prefix}.geojson"
             if os.path.exists(path):

@@ -12,7 +12,7 @@ Workflow
 4. Drop any empty geometries produced during merging.
 5. Write the result as both GeoJSON (FeatureCollection) and WKT.
 
-Each GeoJSON Feature is assigned a stable UUID4 in its top-level ``id``
+Each GeoJSON Feature is assigned a deterministic UUID5 in its top-level ``id``
 field, conforming to RFC 7946.
 """
 
@@ -33,6 +33,49 @@ import shapely.wkt
 import tqdm
 
 logging.basicConfig(level=logging.INFO)
+
+DETERMINISTIC_FEATURE_NAMESPACE = uuid.UUID(
+    "df0c588a-4c4b-5f72-80be-f39cc4d4ba6e"
+)
+
+
+def _normalised_wkb_hex(geometry: shapely.geometry.base.BaseGeometry) -> str:
+    """Return canonical WKB hex for stable sorting and ID generation."""
+    return shapely.to_wkb(shapely.normalize(geometry), hex=True)
+
+
+def _geometry_sort_key(
+    geometry: shapely.geometry.base.BaseGeometry,
+) -> tuple[tuple[float, ...], float, float, str, str]:
+    """Build a deterministic ordering key for shapely geometries."""
+    bounds = tuple(geometry.bounds) if not geometry.is_empty else (float("inf"),) * 4
+    return (
+        bounds,
+        geometry.area,
+        geometry.length,
+        geometry.geom_type,
+        _normalised_wkb_hex(geometry),
+    )
+
+
+def sort_polygons_deterministically(
+    polygons: list[shapely.geometry.base.BaseGeometry],
+) -> list[shapely.geometry.base.BaseGeometry]:
+    """Return geometries in a stable, content-derived order."""
+    return sorted(polygons, key=_geometry_sort_key)
+
+
+def _overlaps_with_margin(
+    first: shapely.geometry.base.BaseGeometry,
+    second: shapely.geometry.base.BaseGeometry,
+) -> bool:
+    """Return true when either polygon intersects the other's 1-pixel inset."""
+    first_inset = first.buffer(-1)
+    second_inset = second.buffer(-1)
+    return (
+        (not first_inset.is_empty and second.intersects(first_inset))
+        or (not second_inset.is_empty and first.intersects(second_inset))
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +266,7 @@ def merge_overlapping_polygons(
     if not polygons:
         return []
 
+    polygons = sort_polygons_deterministically(polygons)
     tree = shapely.strtree.STRtree(polygons)
     processed: set[int] = set()
     polygon_groups: list[set[int]] = []
@@ -231,16 +275,31 @@ def merge_overlapping_polygons(
     for idx, poly in tqdm.tqdm(enumerate(polygons), total=len(polygons)):
         if idx in processed:
             continue
-        shapely.prepare(poly)
-        inset = poly.buffer(-1)
-        candidates = tree.query(geometry=poly, predicate="intersects").tolist()
-        overlapping = {
-            j
-            for j in candidates
-            if j not in processed and polygons[j].intersects(inset)
-        }
-        processed.update(overlapping)
-        polygon_groups.append(overlapping)
+        group: set[int] = set()
+        pending = [idx]
+
+        while pending:
+            current = pending.pop(0)
+            if current in group:
+                continue
+
+            group.add(current)
+            current_poly = polygons[current]
+            shapely.prepare(current_poly)
+
+            candidates = sorted(
+                tree.query(geometry=current_poly, predicate="intersects").tolist()
+            )
+            for candidate in candidates:
+                if (
+                    candidate not in processed
+                    and candidate not in group
+                    and _overlaps_with_margin(current_poly, polygons[candidate])
+                ):
+                    pending.append(candidate)
+
+        processed.update(group)
+        polygon_groups.append(group)
 
     merged: list[shapely.geometry.base.BaseGeometry] = []
     n_non_overlapping = 0
@@ -248,17 +307,20 @@ def merge_overlapping_polygons(
 
     logging.info("merging overlapping polygon groups")
     for group in tqdm.tqdm(polygon_groups):
+        ordered_group = sorted(group)
         if len(group) == 1:
             n_non_overlapping += 1
-            merged.extend(polygons[i] for i in group)
+            merged.extend(polygons[i] for i in ordered_group)
         else:
             n_overlapping += len(group)
-            merged.append(shapely.ops.unary_union([polygons[i] for i in group]))
+            merged.append(
+                shapely.ops.unary_union([polygons[i] for i in ordered_group])
+            )
 
     logging.info(f"non-overlapping polygons: {n_non_overlapping}")
     logging.info(f"polygons merged away:     {n_overlapping}")
     logging.info(f"final polygon count:      {len(merged)}")
-    return merged
+    return sort_polygons_deterministically(merged)
 
 
 # ---------------------------------------------------------------------------
@@ -266,26 +328,37 @@ def merge_overlapping_polygons(
 # ---------------------------------------------------------------------------
 
 
-def _polygon_to_geojson_feature(geometry_str: str) -> str:
+def _polygon_to_geojson_feature(feature_input: tuple[int, str] | str) -> str:
     """Serialise one GeoJSON geometry string as a GeoJSON Feature.
 
-    A UUID4 is generated for each call and stored in the Feature's top-level
-    ``id`` member, following RFC 7946 §3.2.  This gives every exported polygon
-    a stable, unique identifier that downstream tools (e.g. QuPath, QGIS) can
-    use for selection and cross-referencing.
+    A UUID5 is generated from the geometry string and deterministic output
+    position, then stored in the Feature's top-level ``id`` member following
+    RFC 7946 §3.2.  This gives every exported polygon a stable, unique
+    identifier that downstream tools (e.g. QuPath, QGIS) can use for selection
+    and cross-referencing.
 
     Args:
-        geometry_str: A valid GeoJSON geometry string as returned by
-            :func:`shapely.to_geojson`.
+        feature_input: Either a valid GeoJSON geometry string as returned by
+            :func:`shapely.to_geojson`, or ``(index, geometry_str)``.
 
     Returns:
         A JSON-serialised GeoJSON Feature string with ``type``, ``id``,
         ``geometry``, and ``properties`` (``null``) members, as required
         by RFC 7946 §3.2.
     """
+    if isinstance(feature_input, tuple):
+        index, geometry_str = feature_input
+    else:
+        index = 0
+        geometry_str = feature_input
+
+    feature_id = uuid.uuid5(
+        DETERMINISTIC_FEATURE_NAMESPACE,
+        f"{index}:{geometry_str}",
+    )
     feature = {
         "type": "Feature",
-        "id": str(uuid.uuid4()),
+        "id": str(feature_id),
         "geometry": json.loads(geometry_str),
         "properties": None,
     }
@@ -299,8 +372,8 @@ def convert_to_geojson(
 ) -> None:
     """Write stitched polygons to a GeoJSON FeatureCollection file.
 
-    Each feature is assigned a unique UUID4 ``id`` and empty ``properties``.
-    Serialisation is parallelised across ``cpus`` workers.
+    Each feature is assigned a deterministic UUID5 ``id`` and empty
+    ``properties``. Serialisation is parallelised across ``cpus`` workers.
 
     Args:
         output_prefix: Output path without extension.
@@ -310,13 +383,16 @@ def convert_to_geojson(
     """
     out_path = f"{output_prefix}.geojson"
     logging.info("serialising polygons to GeoJSON geometry strings")
-    geojson_list = shapely.to_geojson(stitched_polygons).tolist()
+    ordered_polygons = [
+        shapely.normalize(p) for p in sort_polygons_deterministically(stitched_polygons)
+    ]
+    geojson_list = sorted(shapely.to_geojson(ordered_polygons).tolist())
 
     logging.info("wrapping geometries in GeoJSON Features")
     with multiprocessing.Pool(cpus) as pool:
         features = list(
             tqdm.tqdm(
-                pool.imap(_polygon_to_geojson_feature, geojson_list),
+                pool.imap(_polygon_to_geojson_feature, enumerate(geojson_list)),
                 total=len(geojson_list),
             )
         )
@@ -343,12 +419,15 @@ def convert_to_wkt(
         cpus: Number of worker processes for parallel serialisation.
     """
     out_path = f"{output_prefix}.wkt"
+    ordered_polygons = [
+        shapely.normalize(p) for p in sort_polygons_deterministically(stitched_polygons)
+    ]
     logging.info("serialising polygons to WKT")
     with multiprocessing.Pool(cpus) as pool:
-        wkt_strings = list(
+        wkt_strings = sorted(
             tqdm.tqdm(
-                pool.imap(shapely.wkt.dumps, stitched_polygons),
-                total=len(stitched_polygons),
+                pool.imap(shapely.wkt.dumps, ordered_polygons),
+                total=len(ordered_polygons),
             )
         )
     logging.info(f"writing WKT to '{out_path}'")
@@ -380,17 +459,17 @@ def main(output_prefix: str, wkts: list[str]) -> None:
     cpus = len(os.sched_getaffinity(0))
     logging.info(f"available CPUs: {cpus}")
 
-    polygons = load_polygons_from_wkts(wkts)
+    polygons = load_polygons_from_wkts(sorted(wkts))
     polygons = check_polygon_validity(polygons)
     merged = merge_overlapping_polygons(polygons)
-    merged = drop_empty_polygons(merged)
+    merged = sort_polygons_deterministically(drop_empty_polygons(merged))
 
     convert_to_geojson(output_prefix, merged, cpus)
     convert_to_wkt(output_prefix, merged, cpus)
 
 
 @click.command()
-@click.version_option("0.1.16")
+@click.version_option("0.2.1")
 @click.option(
     "--output_prefix",
     required=True,
