@@ -1,6 +1,6 @@
 [project]
 name = "ImageTileProcessor"
-version = "0.1.16"
+version = "0.2.1"
 description = "An in-house package for lazy tiled image loading to save RAM and various methods to post-process tiled outputs"
 authors = [
     { name = "Tong Li", email = "tl10@sanger.ac.uk" },

@@ -91,7 +91,7 @@ def main(
 def run():
     options = {
         "run": main,
-        "version": "0.1.16",
+        "version": "0.2.1",
     }
     fire.Fire(options)
 
